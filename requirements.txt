@@ -5,3 +5,6 @@ pandas_ta
 yfinance
 python-telegram-bot
 requests
+google-generativeai
+plotly
+feedparser
