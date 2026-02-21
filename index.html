@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deni Smart Dashboard Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .card-crypto { transition: transform 0.3s; }
+        .card-crypto:hover { transform: translateY(-5px); border-color: #38bdf8; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center mb-8 glass p-6 rounded-2xl">
+        <div>
+            <h1 class="text-3xl font-bold text-sky-400"><i class="fas fa-satellite"></i> Deni Smart Dashboard</h1>
+            <p class="text-slate-400">Monitoring Pasar Real-Time</p>
+        </div>
+        <div class="text-right mt-4 md:mt-0">
+            <div id="clock" class="text-4xl font-mono font-bold text-white">00:00:00</div>
+            <div id="date" class="text-slate-400 text-sm">Sabtu, 21 Februari 2026</div>
+        </div>
+    </div>
+
+    <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
+        
+        <div class="md:col-span-2 space-y-6">
+            <div class="glass p-6 rounded-2xl">
+                <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+                    <i class="fab fa-bitcoin text-yellow-500"></i> Harga Crypto (IDR)
+                </h2>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4" id="crypto-container">
+                    <div class="animate-pulse bg-slate-800 h-24 rounded-xl"></div>
+                    <div class="animate-pulse bg-slate-800 h-24 rounded-xl"></div>
+                    <div class="animate-pulse bg-slate-800 h-24 rounded-xl"></div>
+                </div>
+            </div>
+
+            <div class="glass p-6 rounded-2xl flex justify-between items-center">
+                <span>Kirim laporan terbaru ke ponsel Anda</span>
+                <button onclick="sendTelegram()" class="bg-sky-600 hover:bg-sky-500 text-white px-6 py-2 rounded-full font-semibold transition">
+                    <i class="fab fa-telegram"></i> Kirim ke Telegram
+                </button>
+            </div>
+        </div>
+
+        <div class="glass p-6 rounded-2xl h-fit">
+            <h2 class="text-xl font-semibold mb-4"><i class="fas fa-shield-halved text-green-500"></i> MM Assistant</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="text-xs text-slate-400">MODAL (BIDR)</label>
+                    <input type="number" id="modal" value="10000000" class="w-full bg-slate-900 border border-slate-700 p-2 rounded-lg mt-1 outline-none focus:border-sky-500">
+                </div>
+                <div>
+                    <label class="text-xs text-slate-400">HARGA ENTRY</label>
+                    <input type="number" id="entry" placeholder="0" class="w-full bg-slate-900 border border-slate-700 p-2 rounded-lg mt-1 outline-none focus:border-sky-500">
+                </div>
+                <div>
+                    <label class="text-xs text-slate-400">STOP LOSS</label>
+                    <input type="number" id="sl" placeholder="0" class="w-full bg-slate-900 border border-slate-700 p-2 rounded-lg mt-1 outline-none focus:border-sky-500">
+                </div>
+                <button onclick="calculateMM()" class="w-full bg-green-600 hover:bg-green-500 py-2 rounded-lg font-bold mt-2">HITUNG</button>
+                <div id="mm-result" class="mt-4 p-3 rounded-lg bg-slate-900 border border-slate-800 hidden text-sm"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // Update Jam Real-Time
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').innerText = now.toLocaleTimeString('id-ID');
+        }
+        setInterval(updateClock, 1000);
+
+        // Ambil Data Crypto (Simulasi via API Publik Indodax)
+        async function fetchPrices() {
+            const coins = ['btc_idr', 'eth_idr', 'sol_idr'];
+            const container = document.getElementById('crypto-container');
+            container.innerHTML = '';
+
+            for (let coin of coins) {
+                try {
+                    const res = await fetch(`https://indodax.com/api/ticker/${coin}`);
+                    const data = await res.json();
+                    const price = parseInt(data.ticker.last).toLocaleString('id-ID');
+                    const name = coin.split('_')[0].toUpperCase();
+
+                    container.innerHTML += `
+                        <div class="glass p-4 rounded-xl card-crypto border-l-4 border-sky-500">
+                            <div class="text-slate-400 text-xs font-bold">${name}/IDR</div>
+                            <div class="text-lg font-bold">Rp ${price}</div>
+                        </div>
+                    `;
+                } catch (e) { console.log("Gagal ambil data"); }
+            }
+        }
+        fetchPrices();
+        setInterval(fetchPrices, 30000); // Update tiap 30 detik
+
+        // Fungsi Hitung Money Management
+        function calculateMM() {
+            const modal = document.getElementById('modal').value;
+            const entry = document.getElementById('entry').value;
+            const sl = document.getElementById('sl').value;
+            const resultDiv = document.getElementById('mm-result');
+
+            if (entry > sl && sl > 0) {
+                const risk = modal * 0.01;
+                const posSize = risk / (entry - sl);
+                resultDiv.innerHTML = `
+                    <p class="text-green-400">✅ Rekomendasi Beli: <b>${posSize.toFixed(6)}</b></p>
+                    <p class="text-yellow-400 italic">Resiko 1%: Rp ${risk.toLocaleString('id-ID')}</p>
+                `;
+                resultDiv.classList.remove('hidden');
+            } else {
+                alert("Harga Entry harus lebih besar dari Stop Loss!");
+            }
+        }
+
+        // Fungsi Kirim Telegram (Memerlukan Token kamu)
+        function sendTelegram() {
+            const token = "8412761126:AAGR19N3fTE0uVwDwHTCVyijPxVvURkXhI";
+            const chatId = "5626561520";
+            const text = encodeURIComponent("🛰️ Deni Smart Dashboard: Laporan harga terbaru sedang dipantau!");
+            
+            fetch(`https://api.telegram.org/bot${token}/sendMessage?chat_id=${chatId}&text=${text}`)
+            .then(() => alert("Terkirim ke Telegram!"))
+            .catch(() => alert("Gagal kirim!"));
+        }
+    </script>
+</body>
+</html>
