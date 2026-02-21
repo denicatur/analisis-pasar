@@ -3,122 +3,164 @@ import ccxt
 import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
-from telegram import Bot, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import requests
+import feedparser
+import plotly.graph_objects as go
+import google.generativeai as genai
+from telegram import Bot
 import asyncio
-import threading
 import time
+from datetime import datetime
 
-# --- KONFIGURASI ---
-st.set_page_config(page_title="Deni Smart Dashboard", layout="wide")
+# --- 1. KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="Deni Smart Dashboard Pro", layout="wide", page_icon="🛰️")
 
-# Mengambil API Key dari Streamlit Secrets
+# Inisialisasi API dari Secrets
 try:
     TOKEN = st.secrets["TELEGRAM_TOKEN"]
     CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
-except:
-    st.error("Konfigurasi Secrets (Token/ID) Belum Lengkap!")
+    CMC_API_KEY = st.secrets["CMC_API_KEY"]
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+    TOKO_KEY = st.secrets["TOKOCRYPTO_API_KEY"]
+    TOKO_SECRET = st.secrets["TOKOCRYPTO_SECRET_KEY"]
+    
+    # Inisialisasi AI Gemini
+    genai.configure(api_key=GEMINI_API_KEY)
+    ai_model = genai.GenerativeModel('gemini-pro')
+except Exception as e:
+    st.error(f"⚠️ Konfigurasi Secrets tidak lengkap: {e}")
     st.stop()
 
-# Daftar Aset Lengkap
-LIST_CRYPTO = ['BTC/IDR', 'ETH/IDR', 'SOL/IDR', 'BNB/IDR', 'XRP/IDR']
-LIST_FOREX = ['GC=F', 'EURUSD=X', 'GBPUSD=X', 'USDJPY=X']
+# --- 2. FUNGSI PENGAMBILAN DATA ---
 
-# Global State untuk kontrol bot
-if 'bot_run' not in st.session_state:
-    st.session_state['bot_run'] = True
-
-# --- FUNGSI ANALISIS DATA ---
-def fetch_and_logic():
-    results = []
-    notif = ""
-    
-    # 1. Crypto - Indodax
-    ex = ccxt.indodax()
-    for k in LIST_CRYPTO:
+def fetch_crypto_signals():
+    """Analisis Sinyal Tokocrypto"""
+    ex = ccxt.tokocrypto({'apiKey': TOKO_KEY, 'secret': TOKO_SECRET})
+    pairs = ['BTC/BIDR', 'ETH/BIDR', 'SOL/BIDR', 'BNB/BIDR']
+    results, msg = [], ""
+    for k in pairs:
         try:
-            bars = ex.fetch_ohlcv(k, timeframe='1h', limit=50)
+            bars = ex.fetch_ohlcv(k, timeframe='1h', limit=100)
             df = pd.DataFrame(bars, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             rsi = ta.rsi(df['close'], length=14).iloc[-1]
-            ema = ta.ema(df['close'], length=20).iloc[-1]
+            ema20 = ta.ema(df['close'], length=20).iloc[-1]
+            atr = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1]
             price = df['close'].iloc[-1]
             
             status = "TUNGGU"
-            if rsi < 35 and price > ema: status = "🚀 BELI"
-            elif rsi > 70: status = "⚠️ JUAL"
+            sl_price = 0
+            if rsi < 35 and price > ema20:
+                status = "🚀 BELI"
+                sl_price = price - (atr * 2)
+            elif rsi > 70:
+                status = "⚠️ JUAL"
+                sl_price = price + (atr * 2)
             
-            results.append({"Aset": k, "Harga": f"Rp{price:,.0f}", "Sinyal": status})
+            results.append({"Aset": k, "Harga": price, "RSI": rsi, "Sinyal": status, "SL": sl_price})
             if status != "TUNGGU":
-                notif += f"🟢 {status}: `{k}` @ Rp{price:,.0f}\n"
+                msg += f"🏢 *TOKOCRYPTO:* {status} {k}\n💰 Harga: {price:,.0f}\n🛡️ SL: {sl_price:,.0f}\n\n"
         except: continue
+    return results, msg
 
-    # 2. Forex & Gold - Yahoo Finance
-    for f in LIST_FOREX:
+def fetch_forex_signals():
+    """Analisis Sinyal Forex & Gold"""
+    pairs = {'GC=F': 'GOLD (XAU/USD)', 'EURUSD=X': 'EUR/USD', 'GBPUSD=X': 'GBP/USD'}
+    results, msg = [], ""
+    for sym, name in pairs.items():
         try:
-            data = yf.download(f, period="2d", interval="1h", progress=False, auto_adjust=True)
-            close = data['Close'].iloc[:, 0] if isinstance(data['Close'], pd.DataFrame) else data['Close']
-            p, r, e = close.iloc[-1], ta.rsi(close, length=14).iloc[-1], ta.ema(close, length=20).iloc[-1]
-            
-            status = "TUNGGU"
-            if r < 35 and p > e: status = "🚀 BELI"
-            elif r > 70: status = "⚠️ JUAL"
-            
-            name = "GOLD" if "GC=F" in f else f.replace('=X','')
-            results.append({"Aset": name, "Harga": f"{p:,.2f}", "Sinyal": status})
+            data = yf.download(sym, period="5d", interval="1h", progress=False)
+            df = data['Close']
+            rsi = ta.rsi(df, length=14).iloc[-1]
+            price = df.iloc[-1]
+            status = "🚀 BUY" if rsi < 30 else "⚠️ SELL" if rsi > 70 else "TUNGGU"
+            results.append({"Pair": name, "Harga": f"{price:,.2f}", "RSI": f"{rsi:.1f}", "Sinyal": status})
             if status != "TUNGGU":
-                notif += f"🔵 {status}: `{name}` @ {p:,.2f}\n"
+                msg += f"🌍 *FOREX:* {status} {name}\n💰 Harga: {price:,.2f}\n\n"
         except: continue
-        
-    return results, notif
+    return results, msg
 
-# --- TELEGRAM COMMANDS ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st.session_state['bot_run'] = True
-    await update.message.reply_text("✅ Bot Dinyalakan! Sinyal akan dikirim otomatis jika terdeteksi.")
+def get_ai_news():
+    """Berita dengan Sentimen AI"""
+    feed = feedparser.parse("https://cryptopanic.com/news/rss/")
+    news_data = []
+    for entry in feed.entries[:3]:
+        try:
+            prompt = f"Analisis sentimen berita ini (Bullish/Bearish/Neutral) dalam 1 kata: {entry.title}"
+            sentimen = ai_model.generate_content(prompt).text
+            news_data.append({"Judul": entry.title, "Sentimen": sentimen})
+        except: news_data.append({"Judul": entry.title, "Sentimen": "Neutral"})
+    return news_data
 
-async def status_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "🟢 Bot Aktif" if st.session_state['bot_run'] else "🔴 Bot Nonaktif"
-    await update.message.reply_text(f"Status saat ini: {msg}")
+# --- 3. UI DASHBOARD ---
 
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st.session_state['bot_run'] = False
-    await update.message.reply_text("🛑 Bot Dimatikan. Gunakan /start untuk menyalakan kembali.")
+st.title("🛰️ Deni Smart Dashboard Pro")
 
-# --- BACKGROUND PROCESSES ---
-def run_telegram_listener():
-    """Mendengarkan perintah /start, /status, /stop dari Telegram"""
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status_bot))
-    app.add_handler(CommandHandler("stop", stop))
-    app.run_polling(close_loop=False)
+# Sidebar: Saldo & Money Management
+with st.sidebar:
+    st.header("💰 Saldo Tokocrypto")
+    try:
+        ex_toko = ccxt.tokocrypto({'apiKey': TOKO_KEY, 'secret': TOKO_SECRET})
+        bal = ex_toko.fetch_balance()['free']
+        st.metric("Saldo BIDR", f"Rp{bal.get('BIDR', 0):,.0f}")
+    except: st.warning("Cek API Key Anda")
 
-def run_auto_scanner():
-    """Memindai pasar dan mengirim notif otomatis setiap 5 menit"""
-    bot = Bot(token=TOKEN)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    while True:
-        if st.session_state['bot_run']:
-            _, notif = fetch_and_logic()
-            if notif:
-                full_msg = f"🛰️ *DENI SIGNAL DETECTOR*\n\n{notif}"
-                loop.run_until_complete(bot.send_message(chat_id=CHAT_ID, text=full_msg, parse_mode='Markdown'))
-        time.sleep(300)
+    st.divider()
+    st.header("🛡️ MM Assistant")
+    total_modal = st.number_input("Modal (BIDR)", value=10000000)
+    e_price = st.number_input("Harga Entry", min_value=0.0)
+    s_price = st.number_input("Harga Stop Loss", min_value=0.0)
+    if e_price > s_price > 0:
+        risk_rp = total_modal * 0.01
+        pos_size = risk_rp / (e_price - s_price)
+        st.success(f"Rekomendasi Beli: {pos_size:.6f}")
+        st.info(f"Resiko per Trade: Rp{risk_rp:,.0f}")
 
-# Jalankan Thread di latar belakang server (hanya sekali)
-if "threads_active" not in st.runtime.get_instance()._session_mgr.__dict__:
-    threading.Thread(target=run_telegram_listener, daemon=True).start()
-    threading.Thread(target=run_auto_scanner, daemon=True).start()
-    st.runtime.get_instance()._session_mgr.__dict__["threads_active"] = True
+# Tabs Utama
+tab1, tab2, tab3 = st.tabs(["🚀 Live Sinyal", "📊 Grafik", "🎁 Airdrop & Berita"])
 
-# --- TAMPILAN WEB ---
-st.title("🛰️ Deni Smart Trading Monitor")
-st.write(f"Update: {time.strftime('%H:%M:%S')} WIB")
+with tab1:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Crypto Signals")
+        c_res, c_msg = fetch_crypto_signals()
+        st.table(pd.DataFrame(c_res))
+    with col2:
+        st.subheader("Forex & Gold")
+        f_res, f_msg = fetch_forex_signals()
+        st.table(pd.DataFrame(f_res))
+    
+    if st.button("📲 Kirim Laporan ke Telegram"):
+        full_msg = f"🛰️ *DENI UPDATE REPORT*\n\n{c_msg}{f_msg}"
+        asyncio.run(Bot(token=TOKEN).send_message(chat_id=CHAT_ID, text=full_msg, parse_mode='Markdown'))
+        st.toast("Terkirim ke Telegram!", icon="✅")
 
-res, _ = fetch_and_logic()
-if res:
-    st.table(pd.DataFrame(res))
+with tab2:
+    selected = st.selectbox("Pilih Aset", ['BTC/BIDR', 'ETH/BIDR', 'SOL/BIDR'])
+    try:
+        bars = ccxt.tokocrypto().fetch_ohlcv(selected, timeframe='1h', limit=50)
+        df_chart = pd.DataFrame(bars, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+        df_chart['ts'] = pd.to_datetime(df_chart['ts'], unit='ms')
+        fig = go.Figure(data=[go.Candlestick(x=df_chart['ts'], open=df_chart['open'], high=df_chart['high'], low=df_chart['low'], close=df_chart['close'])])
+        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
+        st.plotly_chart(fig, use_container_width=True)
+    except: st.error("Gagal memuat grafik")
 
+with tab3:
+    c_a, c_b = st.columns(2)
+    with c_a:
+        st.subheader("🤖 AI News Sentiment")
+        for n in get_ai_news():
+            st.write(f"📌 {n['Judul']}")
+            st.caption(f"AI Sentimen: {n['Sentimen']}")
+            st.write("---")
+    with c_b:
+        st.subheader("🪂 Airdrop Alert")
+        airdrop_feed = feedparser.parse("https://cryptopanic.com/news/rss/?filter=airdrop")
+        for e in airdrop_feed.entries[:5]:
+            st.write(f"💎 [{e.title}]({e.link})")
+
+# Footer & Auto-Refresh
+st.divider()
+st.caption(f"Terakhir Update: {datetime.now().strftime('%H:%M:%S')}")
 time.sleep(60)
 st.rerun()
