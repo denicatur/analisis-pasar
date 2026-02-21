@@ -4,78 +4,121 @@ import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
 from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import asyncio
 import threading
 import time
 
-# --- CONFIG ---
-st.set_page_config(page_title="Deni Smart Bot", layout="wide")
+# --- KONFIGURASI ---
+st.set_page_config(page_title="Deni Smart Dashboard", layout="wide")
 
+# Mengambil API Key dari Streamlit Secrets
 try:
-    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-    TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
+    TOKEN = st.secrets["TELEGRAM_TOKEN"]
+    CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 except:
-    st.error("Konfigurasi Secrets Belum Lengkap!")
+    st.error("Konfigurasi Secrets (Token/ID) Belum Lengkap!")
     st.stop()
 
-# State untuk kontrol Bot
-if 'bot_active' not in st.session_state:
-    st.session_state['bot_active'] = True
+# Daftar Aset Lengkap
+LIST_CRYPTO = ['BTC/IDR', 'ETH/IDR', 'SOL/IDR', 'BNB/IDR', 'XRP/IDR']
+LIST_FOREX = ['GC=F', 'EURUSD=X', 'GBPUSD=X', 'USDJPY=X']
 
-# --- FUNGSI COMMAND TELEGRAM ---
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st.session_state['bot_active'] = True
-    await update.message.reply_text("✅ Monitoring Diaktifkan! Bot mulai memantau pasar...")
+# Global State untuk kontrol bot
+if 'bot_run' not in st.session_state:
+    st.session_state['bot_run'] = True
 
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    st.session_state['bot_active'] = False
-    await update.message.reply_text("🛑 Monitoring Dimatikan. Ketik /start untuk menyalakan kembali.")
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status = "🟢 AKTIF" if st.session_state['bot_active'] else "🔴 NONAKTIF"
-    await update.message.reply_text(f"Status Bot saat ini: {status}")
-
-# --- WORKER: MENDENGARKAN PERINTAH TELEGRAM ---
-def telegram_listener():
-    """Fungsi ini berjalan 24 jam untuk menunggu perintah /start atau /stop"""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("status", status_cmd))
+# --- FUNGSI ANALISIS DATA ---
+def fetch_and_logic():
+    results = []
+    notif = ""
     
-    print("Remote Control Telegram Aktif...")
-    application.run_polling(close_loop=False)
+    # 1. Crypto - Indodax
+    ex = ccxt.indodax()
+    for k in LIST_CRYPTO:
+        try:
+            bars = ex.fetch_ohlcv(k, timeframe='1h', limit=50)
+            df = pd.DataFrame(bars, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+            rsi = ta.rsi(df['close'], length=14).iloc[-1]
+            ema = ta.ema(df['close'], length=20).iloc[-1]
+            price = df['close'].iloc[-1]
+            
+            status = "TUNGGU"
+            if rsi < 35 and price > ema: status = "🚀 BELI"
+            elif rsi > 70: status = "⚠️ JUAL"
+            
+            results.append({"Aset": k, "Harga": f"Rp{price:,.0f}", "Sinyal": status})
+            if status != "TUNGGU":
+                notif += f"🟢 {status}: `{k}` @ Rp{price:,.0f}\n"
+        except: continue
 
-# --- WORKER: SCANNER PASAR ---
-def monitoring_worker():
-    bot_obj = Bot(token=TELEGRAM_TOKEN)
+    # 2. Forex & Gold - Yahoo Finance
+    for f in LIST_FOREX:
+        try:
+            data = yf.download(f, period="2d", interval="1h", progress=False, auto_adjust=True)
+            close = data['Close'].iloc[:, 0] if isinstance(data['Close'], pd.DataFrame) else data['Close']
+            p, r, e = close.iloc[-1], ta.rsi(close, length=14).iloc[-1], ta.ema(close, length=20).iloc[-1]
+            
+            status = "TUNGGU"
+            if r < 35 and p > e: status = "🚀 BELI"
+            elif r > 70: status = "⚠️ JUAL"
+            
+            name = "GOLD" if "GC=F" in f else f.replace('=X','')
+            results.append({"Aset": name, "Harga": f"{p:,.2f}", "Sinyal": status})
+            if status != "TUNGGU":
+                notif += f"🔵 {status}: `{name}` @ {p:,.2f}\n"
+        except: continue
+        
+    return results, notif
+
+# --- TELEGRAM COMMANDS ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st.session_state['bot_run'] = True
+    await update.message.reply_text("✅ Bot Dinyalakan! Sinyal akan dikirim otomatis jika terdeteksi.")
+
+async def status_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "🟢 Bot Aktif" if st.session_state['bot_run'] else "🔴 Bot Nonaktif"
+    await update.message.reply_text(f"Status saat ini: {msg}")
+
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    st.session_state['bot_run'] = False
+    await update.message.reply_text("🛑 Bot Dimatikan. Gunakan /start untuk menyalakan kembali.")
+
+# --- BACKGROUND PROCESSES ---
+def run_telegram_listener():
+    """Mendengarkan perintah /start, /status, /stop dari Telegram"""
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status_bot))
+    app.add_handler(CommandHandler("stop", stop))
+    app.run_polling(close_loop=False)
+
+def run_auto_scanner():
+    """Memindai pasar dan mengirim notif otomatis setiap 5 menit"""
+    bot = Bot(token=TOKEN)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     while True:
-        if st.session_state.get('bot_active', True):
-            # ... (Kode fetch_data_all Anda di sini) ...
-            # Jika ada sinyal, kirim notif:
-            # loop.run_until_complete(bot_obj.send_message(...))
-            print("Scanning pasar...")
-        
-        time.sleep(300) # Scan tiap 5 menit
+        if st.session_state['bot_run']:
+            _, notif = fetch_and_logic()
+            if notif:
+                full_msg = f"🛰️ *DENI SIGNAL DETECTOR*\n\n{notif}"
+                loop.run_until_complete(bot.send_message(chat_id=CHAT_ID, text=full_msg, parse_mode='Markdown'))
+        time.sleep(300)
 
-# --- MENJALANKAN KEDUA WORKER ---
-if "listener_started" not in st.runtime.get_instance()._session_mgr.__dict__:
-    # Thread 1: Dengerin Chat Telegram
-    threading.Thread(target=telegram_listener, daemon=True).start()
-    # Thread 2: Scan Pasar
-    threading.Thread(target=monitoring_worker, daemon=True).start()
-    st.runtime.get_instance()._session_mgr.__dict__["listener_started"] = True
+# Jalankan Thread di latar belakang server (hanya sekali)
+if "threads_active" not in st.runtime.get_instance()._session_mgr.__dict__:
+    threading.Thread(target=run_telegram_listener, daemon=True).start()
+    threading.Thread(target=run_auto_scanner, daemon=True).start()
+    st.runtime.get_instance()._session_mgr.__dict__["threads_active"] = True
 
-# --- UI STREAMLIT ---
-st.title("🛰️ Deni Smart Bot Control")
-status_label = "🟢 AKTIF" if st.session_state['bot_active'] else "🔴 NONAKTIF"
-st.metric("Status Bot", status_label)
+# --- TAMPILAN WEB ---
+st.title("🛰️ Deni Smart Trading Monitor")
+st.write(f"Update: {time.strftime('%H:%M:%S')} WIB")
 
-if st.button("Nyalakan Manual"):
-    st.session_state['bot_active'] = True
-if st.button("Matikan Manual"):
-    st.session_state['bot_active'] = False
+res, _ = fetch_and_logic()
+if res:
+    st.table(pd.DataFrame(res))
+
+time.sleep(60)
+st.rerun()
