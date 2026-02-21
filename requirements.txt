@@ -8,6 +8,3 @@ requests
 google-generativeai
 plotly
 feedparser
-google-generativeai
-plotly
-feedparser
