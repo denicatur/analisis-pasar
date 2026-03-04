@@ -1,8 +1,7 @@
 streamlit
+ccxt
 pandas
 pandas_ta
 yfinance
-requests
-pytz
 python-telegram-bot
-plotly
+requests
