@@ -10,54 +10,57 @@ import threading
 import time
 from datetime import datetime
 
-# --- 1. LOGIKA LOGIN DENGAN TOMBOL ---
+# --- 1. LOGIKA LOGIN MODERN ---
 def login_ui():
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
 
     if not st.session_state["authenticated"]:
-        st.markdown("<h2 style='text-align: center;'>🔒 Deni Private Terminal</h2>", unsafe_allow_value=True)
-        
-        # Kolom di tengah untuk tampilan login yang rapi
-        _, col_mid, _ = st.columns([1, 2, 1])
+        # Tampilan Tengah
+        _, col_mid, _ = st.columns([1, 1.5, 1])
         with col_mid:
-            user = st.text_input("Username", placeholder="Masukkan username...")
-            pw = st.text_input("Password", type="password", placeholder="Masukkan password...")
+            st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🛰️ DENI TERMINAL</h1>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center;'>Market Analysis & Automated Signals</p>", unsafe_allow_html=True)
             
-            if st.button("Masuk Ke Sistem"):
-                if user == st.secrets["MY_USER"] and pw == st.secrets["MY_PASS"]:
-                    st.session_state["authenticated"] = True
-                    st.rerun()
-                else:
-                    st.error("❌ Username atau Password salah!")
+            with st.container(border=True):
+                user = st.text_input("👤 Username", placeholder="Enter username")
+                pw = st.text_input("🔑 Password", type="password", placeholder="Enter password")
+                
+                # Tombol Login
+                if st.button("AUTHENTICATE & ACCESS", use_container_width=True):
+                    if user == st.secrets["MY_USER"] and pw == st.secrets["MY_PASS"]:
+                        st.session_state["authenticated"] = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid Credentials")
+            
+            st.caption("Secure encrypted access for authorized users only.")
         return False
     return True
 
-# --- JALANKAN CEK LOGIN ---
+# --- CEK LOGIN SEBELUM RENDER ---
 if login_ui():
     st.set_page_config(page_title="Deni Global Trading Terminal", layout="wide")
 
-    # --- 2. DAFTAR INSTRUMEN ---
+    # --- 2. DATA INSTRUMEN ---
     ASSETS = {
         "FOREX": ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X'],
         "METALS": ['GC=F', 'SI=F'],
-        "INDEXES": ['^IXIC', '^DJI', '^GSPC']
+        "INDEXES/NASDAQ": ['^IXIC', '^DJI', '^GSPC']
     }
-    ALL_SYMBOLS = ASSETS["FOREX"] + ASSETS["METALS"] + ASSETS["INDEXES"]
+    ALL_SYMBOLS = ASSETS["FOREX"] + ASSETS["METALS"] + ASSETS["INDEXES/NASDAQ"]
 
-    # --- 3. FUNGSI DATA & ANALISIS ---
-    @st.cache_data(ttl=300)
-    def get_economic_calendar():
+    # --- 3. HELPER FUNCTIONS ---
+    @st.cache_data(ttl=600)
+    def fetch_calendar():
         try:
             feed = feedparser.parse("https://www.dailyfx.com/free-ads/economic-calendar/rss")
-            events = []
-            for entry in feed.entries[:10]:
-                events.append({"Waktu": entry.published, "Event": entry.title})
-            return pd.DataFrame(events)
+            data = [{"Time": e.published, "Event": e.title} for e in feed.entries[:12]]
+            return pd.DataFrame(data)
         except:
-            return pd.DataFrame([{"Info": "Gagal memuat kalender ekonomi"}])
+            return pd.DataFrame([{"Info": "Calendar service unavailable"}])
 
-    def fetch_data(symbol):
+    def fetch_market_data(symbol):
         try:
             df = yf.download(symbol, period="5d", interval="1h", progress=False, auto_adjust=True)
             if df.empty: return None
@@ -68,57 +71,60 @@ if login_ui():
             return df
         except: return None
 
-    # --- 4. TAMPILAN DASHBOARD ---
-    st.sidebar.title("🚀 Control Panel")
-    st.sidebar.write(f"User: **{st.secrets['MY_USER']}**")
-    if st.sidebar.button("Logout / Keluar"):
+    # --- 4. SIDEBAR CONTROL ---
+    st.sidebar.markdown(f"### 🛡️ Authorized User\n**{st.secrets['MY_USER']}**")
+    if st.sidebar.button("LOGOUT SYSTEM", use_container_width=True):
         st.session_state["authenticated"] = False
         st.rerun()
+    
+    st.sidebar.divider()
+    st.sidebar.info("Bot Status: 🟢 ACTIVE\nServer: Streamlit Cloud")
 
-    st.title("🛰️ Deni Global Trading Terminal")
-    st.write(f"Update Terakhir: {datetime.now().strftime('%H:%M:%S')} WIB")
+    # --- 5. MAIN UI ---
+    st.title("🛰️ Deni Smart Trading Terminal")
+    
+    tab1, tab2, tab3 = st.tabs(["📊 Market Monitor", "📈 Chart Analysis", "📅 Economic Calendar"])
 
-    tab_monitor, tab_charts, tab_calendar = st.tabs(["📊 Monitoring", "📈 Candlestick Charts", "📅 Calendar"])
-
-    with tab_monitor:
-        st.subheader("Market Signals")
+    with tab1:
+        st.subheader("Automated Signal Feed")
         results = []
         for sym in ALL_SYMBOLS:
-            df = fetch_data(sym)
+            df = fetch_market_data(sym)
             if df is not None:
                 last = df.iloc[-1]
                 price, rsi, ema = last['Close'], last['RSI'], last['EMA20']
-                status = "⚖️ WAIT"
-                if rsi < 35 and price > ema: status = "🚀 BUY"
-                elif rsi > 70: status = "⚠️ SELL"
+                status = "⚖️ NEUTRAL"
+                if rsi < 35 and price > ema: status = "🚀 BUY SIGNAL"
+                elif rsi > 70: status = "⚠️ SELL SIGNAL"
                 
                 results.append({
                     "Symbol": sym.replace('=X', '').replace('^', ''),
                     "Price": f"{price:,.2f}" if price > 10 else f"{price:.4f}",
                     "RSI": f"{rsi:.2f}",
-                    "Signal": status
+                    "System Signal": status
                 })
-        st.table(pd.DataFrame(results))
+        st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
 
-    with tab_charts:
-        st.subheader("Interactive Candlestick")
-        selected_asset = st.selectbox("Pilih Aset:", ALL_SYMBOLS)
-        df_chart = fetch_data(selected_asset)
+    with tab2:
+        st.subheader("Candlestick & Indicator View")
+        target = st.selectbox("Select Asset to Analyze:", ALL_SYMBOLS)
+        df_chart = fetch_market_data(target)
         if df_chart is not None:
             fig = go.Figure(data=[go.Candlestick(
                 x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
-                low=df_chart['Low'], close=df_chart['Close'], name=selected_asset
+                low=df_chart['Low'], close=df_chart['Close'], name='Price'
             )])
-            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA20'], line=dict(color='orange', width=1.5), name='EMA20'))
-            fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
+            fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['EMA20'], line=dict(color='#FFAA00', width=2), name='EMA 20'))
+            fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
-            [Image of a professional candlestick chart with EMA and RSI indicators]
+            
 
-    with tab_calendar:
-        st.subheader("Upcoming Economic Events")
-        st.dataframe(get_economic_calendar(), use_container_width=True)
+    with tab3:
+        st.subheader("Global Economic Calendar")
+        st.table(fetch_calendar())
+        
 
-    # --- 5. WORKER TELEGRAM 24/7 ---
+    # --- 6. BACKGROUND WORKER (TELEGRAM) ---
     def telegram_worker():
         bot = Bot(token=st.secrets["TELEGRAM_TOKEN"])
         loop = asyncio.new_event_loop()
@@ -126,7 +132,7 @@ if login_ui():
         while True:
             notif_text = ""
             for sym in ALL_SYMBOLS:
-                df = fetch_data(sym)
+                df = fetch_market_data(sym)
                 if df is not None:
                     last = df.iloc[-1]
                     if last['RSI'] < 35 and last['Close'] > last['EMA20']:
@@ -142,11 +148,12 @@ if login_ui():
                         parse_mode='Markdown'
                     ))
                 except: pass
-            time.sleep(300) # Scan tiap 5 menit
+            time.sleep(300)
 
     if "bg_active" not in st.runtime.get_instance()._session_mgr.__dict__:
         threading.Thread(target=telegram_worker, daemon=True).start()
         st.runtime.get_instance()._session_mgr.__dict__["bg_active"] = True
 
+    # Auto Refresh Web UI
     time.sleep(60)
     st.rerun()
